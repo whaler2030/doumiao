@@ -4,8 +4,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -19,7 +17,6 @@ import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,7 +27,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.core.content.FileProvider;
 import androidx.exifinterface.media.ExifInterface;
 
 import java.io.File;
@@ -41,7 +37,6 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -53,8 +48,6 @@ public class MainActivity extends Activity {
     private static final int PDF_MARGIN = 24;
 
     private static final String KEY_PAGES = "pages";
-    private static final String KEY_PENDING_PATH = "pending_path";
-    private static final String KEY_PENDING_URI = "pending_uri";
     private static final String KEY_LAST_PDF_URI = "last_pdf_uri";
     private static final String KEY_SMART_PROCESSING = "smart_processing";
     private static final String KEY_CONTINUOUS_CAPTURE = "continuous_capture";
@@ -70,8 +63,6 @@ public class MainActivity extends Activity {
     private Button smartProcessingButton;
     private Button continuousCaptureButton;
 
-    private File pendingImageFile;
-    private Uri pendingImageUri;
     private Uri lastPdfUri;
     private boolean smartProcessingEnabled = true;
     private boolean continuousCaptureEnabled = false;
@@ -97,12 +88,6 @@ public class MainActivity extends Activity {
         }
         outState.putStringArrayList(KEY_PAGES, pagePaths);
 
-        if (pendingImageFile != null) {
-            outState.putString(KEY_PENDING_PATH, pendingImageFile.getAbsolutePath());
-        }
-        if (pendingImageUri != null) {
-            outState.putString(KEY_PENDING_URI, pendingImageUri.toString());
-        }
         if (lastPdfUri != null) {
             outState.putString(KEY_LAST_PDF_URI, lastPdfUri.toString());
         }
@@ -115,7 +100,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
 
         if (requestCode == REQUEST_CAPTURE_IMAGE) {
-            handleCaptureResult(resultCode, data);
+            handleCameraSessionResult(resultCode, data);
             return;
         }
 
@@ -133,16 +118,6 @@ public class MainActivity extends Activity {
                     pages.add(new ScanPage(imageFile));
                 }
             }
-        }
-
-        String pendingPath = state.getString(KEY_PENDING_PATH);
-        if (pendingPath != null) {
-            pendingImageFile = new File(pendingPath);
-        }
-
-        String pendingUriText = state.getString(KEY_PENDING_URI);
-        if (pendingUriText != null) {
-            pendingImageUri = Uri.parse(pendingUriText);
         }
 
         String pdfUriText = state.getString(KEY_LAST_PDF_URI);
@@ -256,7 +231,7 @@ public class MainActivity extends Activity {
         continuousCaptureButton.setOnClickListener(view -> {
             continuousCaptureEnabled = !continuousCaptureEnabled;
             refreshPages();
-            setStatus(continuousCaptureEnabled ? "连拍已开启，按返回结束" : "连拍已关闭");
+            setStatus(continuousCaptureEnabled ? "连拍已开启，点击完成返回" : "连拍已关闭");
         });
         processingActions.addView(continuousCaptureButton, weightedButtonParams(false));
 
@@ -451,150 +426,78 @@ public class MainActivity extends Activity {
     }
 
     private void launchCamera() {
-        try {
-            pendingImageFile = createImageFile();
-            pendingImageUri = FileProvider.getUriForFile(
-                    this,
-                    getPackageName() + ".fileprovider",
-                    pendingImageFile
-            );
-
-            Intent captureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-            captureIntent.putExtra(MediaStore.EXTRA_OUTPUT, pendingImageUri);
-            captureIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-
-            if (captureIntent.resolveActivity(getPackageManager()) == null) {
-                Toast.makeText(this, "未找到相机应用", Toast.LENGTH_SHORT).show();
-                deleteQuietly(pendingImageFile);
-                pendingImageFile = null;
-                pendingImageUri = null;
-                return;
-            }
-
-            grantCameraUriPermissions(captureIntent, pendingImageUri);
-            startActivityForResult(captureIntent, REQUEST_CAPTURE_IMAGE);
-        } catch (IOException exception) {
-            Toast.makeText(this, "无法创建照片文件", Toast.LENGTH_LONG).show();
-        } catch (ActivityNotFoundException exception) {
-            Toast.makeText(this, "未找到相机应用", Toast.LENGTH_SHORT).show();
-        }
+        Intent intent = new Intent(this, CameraActivity.class);
+        intent.putExtra(CameraActivity.EXTRA_CONTINUOUS_CAPTURE, continuousCaptureEnabled);
+        startActivityForResult(intent, REQUEST_CAPTURE_IMAGE);
     }
 
-    private File createImageFile() throws IOException {
-        File baseDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-        if (baseDir == null) {
-            baseDir = getFilesDir();
-        }
-
-        File scansDir = new File(baseDir, "captures");
-        if (!scansDir.exists() && !scansDir.mkdirs()) {
-            throw new IOException("Unable to create capture directory");
-        }
-
-        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.CHINA).format(new Date());
-        return new File(scansDir, "scan_" + timestamp + ".jpg");
-    }
-
-    private void grantCameraUriPermissions(Intent intent, Uri imageUri) {
-        List<ResolveInfo> activities = getPackageManager().queryIntentActivities(
-                intent,
-                PackageManager.MATCH_DEFAULT_ONLY
-        );
-        for (ResolveInfo activity : activities) {
-            grantUriPermission(
-                    activity.activityInfo.packageName,
-                    imageUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            );
-        }
-    }
-
-    private void handleCaptureResult(int resultCode, Intent data) {
-        File capturedFile = pendingImageFile;
-        Uri capturedUri = pendingImageUri;
-        pendingImageFile = null;
-        pendingImageUri = null;
-
-        if (capturedUri != null) {
-            revokeUriPermission(
-                    capturedUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            );
-        }
-
-        if (resultCode != RESULT_OK || capturedFile == null) {
-            deleteQuietly(capturedFile);
-            if (continuousCaptureEnabled) {
-                continuousCaptureEnabled = false;
-                Toast.makeText(this, "连拍已结束", Toast.LENGTH_SHORT).show();
-            }
-            refreshPages();
+    private void handleCameraSessionResult(int resultCode, Intent data) {
+        if (resultCode != RESULT_OK || data == null) {
             return;
         }
 
-        if (capturedFile.length() == 0 && data != null) {
-            saveFallbackThumbnail(data, capturedFile);
+        ArrayList<String> capturedPaths = data.getStringArrayListExtra(CameraActivity.EXTRA_CAPTURED_PATHS);
+        if (capturedPaths == null || capturedPaths.isEmpty()) {
+            return;
         }
 
-        if (!capturedFile.exists() || capturedFile.length() == 0) {
+        ArrayList<File> capturedFiles = new ArrayList<>();
+        for (String path : capturedPaths) {
+            File imageFile = new File(path);
+            if (imageFile.exists() && imageFile.length() > 0) {
+                capturedFiles.add(imageFile);
+            }
+        }
+
+        if (capturedFiles.isEmpty()) {
             Toast.makeText(this, "照片未保存", Toast.LENGTH_SHORT).show();
-            deleteQuietly(capturedFile);
-            refreshPages();
             return;
         }
 
-        boolean continueAfterThisPage = continuousCaptureEnabled;
-        if (smartProcessingEnabled) {
-            updateActionButtons();
-            setStatus("正在自动裁边和 AI 增亮...");
-            processCapturedPageAsync(capturedFile, continueAfterThisPage);
-            return;
-        }
-
-        addCapturedPage(capturedFile, false, continueAfterThisPage);
+        setStatus(smartProcessingEnabled
+                ? "正在裁切和增强 " + capturedFiles.size() + " 页..."
+                : "正在添加 " + capturedFiles.size() + " 页...");
+        processCapturedPagesAsync(capturedFiles);
     }
 
-    private void saveFallbackThumbnail(Intent data, File outputFile) {
-        Object bitmapObject = data.getExtras() == null ? null : data.getExtras().get("data");
-        if (!(bitmapObject instanceof Bitmap)) {
-            return;
-        }
-
-        try (FileOutputStream outputStream = new FileOutputStream(outputFile)) {
-            ((Bitmap) bitmapObject).compress(Bitmap.CompressFormat.JPEG, 92, outputStream);
-        } catch (IOException ignored) {
-            deleteQuietly(outputFile);
-        }
-    }
-
-    private void processCapturedPageAsync(File capturedFile, boolean continueAfterThisPage) {
+    private void processCapturedPagesAsync(ArrayList<File> capturedFiles) {
         Thread processingThread = new Thread(() -> {
-            File pageFile = capturedFile;
-            boolean processed = false;
+            ArrayList<ProcessedPage> processedPages = new ArrayList<>();
 
-            try {
-                pageFile = processCapturedImage(capturedFile);
-                processed = !pageFile.equals(capturedFile);
-            } catch (IOException | RuntimeException ignored) {
-                pageFile = capturedFile;
+            for (File capturedFile : capturedFiles) {
+                File pageFile = capturedFile;
+                boolean processed = false;
+
+                if (smartProcessingEnabled) {
+                    try {
+                        pageFile = processCapturedImage(capturedFile);
+                        processed = !pageFile.equals(capturedFile);
+                    } catch (IOException | RuntimeException ignored) {
+                        pageFile = capturedFile;
+                    }
+                }
+
+                processedPages.add(new ProcessedPage(pageFile, processed));
             }
 
-            File finalPageFile = pageFile;
-            boolean finalProcessed = processed;
-            runOnUiThread(() -> addCapturedPage(finalPageFile, finalProcessed, continueAfterThisPage));
+            runOnUiThread(() -> addCapturedPages(processedPages));
         }, "doumiao-page-processing");
         processingThread.start();
     }
 
-    private void addCapturedPage(File pageFile, boolean processed, boolean continueAfterThisPage) {
-        pages.add(new ScanPage(pageFile));
-        refreshPages();
-        setStatus(processed ? pages.size() + " 页已智能处理" : pages.size() + " 页待生成");
-
-        if (continueAfterThisPage && continuousCaptureEnabled) {
-            Toast.makeText(this, "已添加第 " + pages.size() + " 页，继续拍摄", Toast.LENGTH_SHORT).show();
-            pageList.postDelayed(this::launchCamera, 450);
+    private void addCapturedPages(ArrayList<ProcessedPage> processedPages) {
+        int processedCount = 0;
+        for (ProcessedPage processedPage : processedPages) {
+            pages.add(new ScanPage(processedPage.imageFile));
+            if (processedPage.processed) {
+                processedCount++;
+            }
         }
+
+        refreshPages();
+        setStatus(processedCount > 0
+                ? "已智能处理 " + processedCount + " 页，共 " + pages.size() + " 页"
+                : "已添加 " + processedPages.size() + " 页，共 " + pages.size() + " 页");
     }
 
     private File processCapturedImage(File originalFile) throws IOException {
@@ -659,118 +562,219 @@ public class MainActivity extends Activity {
     }
 
     private Rect findDocumentBounds(Bitmap bitmap) {
+        Rect paperBounds = findPaperBounds(bitmap);
+        if (paperBounds != null) {
+            return paperBounds;
+        }
+        return findInkBounds(bitmap);
+    }
+
+    private Rect findPaperBounds(Bitmap bitmap) {
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
-        int step = Math.max(2, Math.min(width, height) / 520);
-        int stableSamples = Math.max(3, Math.min(width, height) / 700);
+        int step = Math.max(2, Math.min(width, height) / 700);
+        int columns = Math.max(1, (width + step - 1) / step);
+        int rows = Math.max(1, (height + step - 1) / step);
+        int[] columnHits = new int[columns];
+        int[] rowHits = new int[rows];
+        EdgeStats border = sampleBorderStats(bitmap, step);
 
-        int left = findVerticalEdge(bitmap, 0, width, step, stableSamples);
-        int right = findVerticalEdge(bitmap, width - 1, -1, -step, stableSamples);
-        int top = findHorizontalEdge(bitmap, 0, height, step, stableSamples);
-        int bottom = findHorizontalEdge(bitmap, height - 1, -1, -step, stableSamples);
+        for (int y = 0, row = 0; y < height; y += step, row++) {
+            for (int x = 0, column = 0; x < width; x += step, column++) {
+                if (isLikelyPaperPixel(bitmap.getPixel(x, y), border)) {
+                    columnHits[column]++;
+                    rowHits[row]++;
+                }
+            }
+        }
 
-        if (left < 0 || right < 0 || top < 0 || bottom < 0 || right <= left || bottom <= top) {
+        float[] columnScores = toScores(columnHits, rows);
+        float[] rowScores = toScores(rowHits, columns);
+        int stable = Math.max(2, Math.min(columns, rows) / 80);
+        float threshold = border.averageLuma > 185 ? 0.08f : 0.11f;
+
+        int leftIndex = firstStableIndex(columnScores, threshold, stable);
+        int rightIndex = lastStableIndex(columnScores, threshold, stable);
+        int topIndex = firstStableIndex(rowScores, threshold, stable);
+        int bottomIndex = lastStableIndex(rowScores, threshold, stable);
+
+        if (leftIndex < 0 || rightIndex <= leftIndex || topIndex < 0 || bottomIndex <= topIndex) {
             return null;
         }
 
-        int padding = Math.max(8, Math.min(width, height) / 60);
-        left = Math.max(0, left - padding);
-        top = Math.max(0, top - padding);
-        right = Math.min(width, right + padding);
-        bottom = Math.min(height, bottom + padding);
+        Rect bounds = new Rect(
+                leftIndex * step,
+                topIndex * step,
+                Math.min(width, (rightIndex + 1) * step),
+                Math.min(height, (bottomIndex + 1) * step)
+        );
+        return validateAndPadCrop(bounds, width, height, 0.46f, 0.055f);
+    }
+
+    private Rect findInkBounds(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int step = Math.max(2, Math.min(width, height) / 780);
+        int marginX = Math.max(4, width / 40);
+        int marginY = Math.max(4, height / 40);
+        int left = width;
+        int right = 0;
+        int top = height;
+        int bottom = 0;
+        int hits = 0;
+
+        for (int y = marginY; y < height - marginY; y += step) {
+            for (int x = marginX; x < width - marginX; x += step) {
+                int color = bitmap.getPixel(x, y);
+                int red = Color.red(color);
+                int green = Color.green(color);
+                int blue = Color.blue(color);
+                int luma = luminance(red, green, blue);
+                int saturation = saturation(red, green, blue);
+                if (luma < 124 && saturation < 120) {
+                    left = Math.min(left, x);
+                    right = Math.max(right, x);
+                    top = Math.min(top, y);
+                    bottom = Math.max(bottom, y);
+                    hits++;
+                }
+            }
+        }
+
+        if (hits < 12 || right <= left || bottom <= top) {
+            return null;
+        }
+
+        Rect bounds = new Rect(left, top, right + step, bottom + step);
+        return validateAndPadCrop(bounds, width, height, 0.36f, 0.14f);
+    }
+
+    private EdgeStats sampleBorderStats(Bitmap bitmap, int step) {
+        long lumaTotal = 0;
+        long saturationTotal = 0;
+        int samples = 0;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int border = Math.max(step * 3, Math.min(width, height) / 18);
+
+        for (int y = 0; y < height; y += step) {
+            for (int x = 0; x < width; x += step) {
+                if (x > border && x < width - border && y > border && y < height - border) {
+                    continue;
+                }
+                int color = bitmap.getPixel(x, y);
+                int red = Color.red(color);
+                int green = Color.green(color);
+                int blue = Color.blue(color);
+                lumaTotal += luminance(red, green, blue);
+                saturationTotal += saturation(red, green, blue);
+                samples++;
+            }
+        }
+
+        if (samples == 0) {
+            return new EdgeStats(170, 40);
+        }
+        return new EdgeStats((int) (lumaTotal / samples), (int) (saturationTotal / samples));
+    }
+
+    private boolean isLikelyPaperPixel(int color, EdgeStats border) {
+        int red = Color.red(color);
+        int green = Color.green(color);
+        int blue = Color.blue(color);
+        int luma = luminance(red, green, blue);
+        int saturation = saturation(red, green, blue);
+
+        if (luma > 218 && saturation < 130) {
+            return true;
+        }
+        if (luma > 158 && saturation < 78) {
+            return border.averageLuma < 150
+                    || luma - border.averageLuma > 16
+                    || border.averageSaturation - saturation > 22;
+        }
+        return luma - border.averageLuma > 36 && saturation < 112;
+    }
+
+    private float[] toScores(int[] hits, int divisor) {
+        float[] scores = new float[hits.length];
+        for (int i = 0; i < hits.length; i++) {
+            scores[i] = divisor == 0 ? 0f : (float) hits[i] / divisor;
+        }
+        return smoothScores(scores);
+    }
+
+    private float[] smoothScores(float[] scores) {
+        float[] smoothed = new float[scores.length];
+        for (int i = 0; i < scores.length; i++) {
+            float total = scores[i];
+            int count = 1;
+            if (i > 0) {
+                total += scores[i - 1];
+                count++;
+            }
+            if (i < scores.length - 1) {
+                total += scores[i + 1];
+                count++;
+            }
+            smoothed[i] = total / count;
+        }
+        return smoothed;
+    }
+
+    private int firstStableIndex(float[] scores, float threshold, int stableSamples) {
+        int stableCount = 0;
+        for (int i = 0; i < scores.length; i++) {
+            if (scores[i] >= threshold) {
+                stableCount++;
+                if (stableCount >= stableSamples) {
+                    return i - stableSamples + 1;
+                }
+            } else {
+                stableCount = 0;
+            }
+        }
+        return -1;
+    }
+
+    private int lastStableIndex(float[] scores, float threshold, int stableSamples) {
+        int stableCount = 0;
+        for (int i = scores.length - 1; i >= 0; i--) {
+            if (scores[i] >= threshold) {
+                stableCount++;
+                if (stableCount >= stableSamples) {
+                    return i + stableSamples - 1;
+                }
+            } else {
+                stableCount = 0;
+            }
+        }
+        return -1;
+    }
+
+    private Rect validateAndPadCrop(Rect bounds, int width, int height, float minCoverage, float paddingRatio) {
+        int padding = Math.max(10, Math.round(Math.min(width, height) * paddingRatio));
+        int left = Math.max(0, bounds.left - padding);
+        int top = Math.max(0, bounds.top - padding);
+        int right = Math.min(width, bounds.right + padding);
+        int bottom = Math.min(height, bounds.bottom + padding);
 
         int cropWidth = right - left;
         int cropHeight = bottom - top;
-        if (cropWidth < width * 0.45f || cropHeight < height * 0.45f) {
+        if (cropWidth < width * minCoverage || cropHeight < height * minCoverage) {
             return null;
         }
 
-        int margin = Math.max(12, Math.min(width, height) / 80);
-        boolean hasUsefulCrop = left > margin || top > margin || width - right > margin || height - bottom > margin;
+        int usefulMargin = Math.max(14, Math.min(width, height) / 95);
+        boolean hasUsefulCrop = left > usefulMargin
+                || top > usefulMargin
+                || width - right > usefulMargin
+                || height - bottom > usefulMargin;
         if (!hasUsefulCrop) {
             return null;
         }
 
         return new Rect(left, top, right, bottom);
-    }
-
-    private int findVerticalEdge(Bitmap bitmap, int start, int stop, int step, int stableSamples) {
-        int stableCount = 0;
-        int firstStable = -1;
-
-        for (int x = start; step > 0 ? x < stop : x > stop; x += step) {
-            float score = paperScoreForColumn(bitmap, x, Math.abs(step));
-            if (score >= 0.18f) {
-                if (stableCount == 0) {
-                    firstStable = x;
-                }
-                stableCount++;
-                if (stableCount >= stableSamples) {
-                    return firstStable;
-                }
-            } else {
-                stableCount = 0;
-                firstStable = -1;
-            }
-        }
-        return -1;
-    }
-
-    private int findHorizontalEdge(Bitmap bitmap, int start, int stop, int step, int stableSamples) {
-        int stableCount = 0;
-        int firstStable = -1;
-
-        for (int y = start; step > 0 ? y < stop : y > stop; y += step) {
-            float score = paperScoreForRow(bitmap, y, Math.abs(step));
-            if (score >= 0.18f) {
-                if (stableCount == 0) {
-                    firstStable = y;
-                }
-                stableCount++;
-                if (stableCount >= stableSamples) {
-                    return firstStable;
-                }
-            } else {
-                stableCount = 0;
-                firstStable = -1;
-            }
-        }
-        return -1;
-    }
-
-    private float paperScoreForColumn(Bitmap bitmap, int x, int step) {
-        int matches = 0;
-        int samples = 0;
-        for (int y = 0; y < bitmap.getHeight(); y += step) {
-            if (isLikelyPaperPixel(bitmap.getPixel(x, y))) {
-                matches++;
-            }
-            samples++;
-        }
-        return samples == 0 ? 0f : (float) matches / samples;
-    }
-
-    private float paperScoreForRow(Bitmap bitmap, int y, int step) {
-        int matches = 0;
-        int samples = 0;
-        for (int x = 0; x < bitmap.getWidth(); x += step) {
-            if (isLikelyPaperPixel(bitmap.getPixel(x, y))) {
-                matches++;
-            }
-            samples++;
-        }
-        return samples == 0 ? 0f : (float) matches / samples;
-    }
-
-    private boolean isLikelyPaperPixel(int color) {
-        int red = Color.red(color);
-        int green = Color.green(color);
-        int blue = Color.blue(color);
-        int max = Math.max(red, Math.max(green, blue));
-        int min = Math.min(red, Math.min(green, blue));
-        int luma = luminance(red, green, blue);
-        int saturation = max - min;
-        return (luma > 148 && saturation < 92) || luma > 188;
     }
 
     private Bitmap enhanceDocument(Bitmap source) {
@@ -779,48 +783,47 @@ public class MainActivity extends Activity {
         int[] pixels = new int[width * height];
         source.getPixels(pixels, 0, width, 0, 0, width, height);
 
-        int[] histogram = new int[256];
+        ChannelBalance balance = measureChannelBalance(pixels, width, height);
+        int[] lumaHistogram = new int[256];
         int sampleStep = Math.max(1, Math.min(width, height) / 720);
         int sampleCount = 0;
         for (int y = 0; y < height; y += sampleStep) {
             for (int x = 0; x < width; x += sampleStep) {
                 int color = pixels[y * width + x];
-                histogram[luminance(Color.red(color), Color.green(color), Color.blue(color))]++;
+                int red = clamp(Math.round(Color.red(color) * balance.redScale));
+                int green = clamp(Math.round(Color.green(color) * balance.greenScale));
+                int blue = clamp(Math.round(Color.blue(color) * balance.blueScale));
+                lumaHistogram[luminance(red, green, blue)]++;
                 sampleCount++;
             }
         }
 
-        int low = percentile(histogram, sampleCount, 0.04f);
-        int high = percentile(histogram, sampleCount, 0.96f);
-        if (high - low < 46) {
-            low = Math.max(0, low - 28);
-            high = Math.min(255, high + 48);
+        int low = percentile(lumaHistogram, sampleCount, 0.025f);
+        int high = percentile(lumaHistogram, sampleCount, 0.92f);
+        if (high - low < 72) {
+            low = Math.max(0, low - 20);
+            high = Math.min(255, low + 132);
         }
         float scale = 255f / Math.max(1, high - low);
 
         for (int i = 0; i < pixels.length; i++) {
             int color = pixels[i];
             int alpha = Color.alpha(color);
-            int red = level(Color.red(color), low, scale);
-            int green = level(Color.green(color), low, scale);
-            int blue = level(Color.blue(color), low, scale);
-            int luma = luminance(red, green, blue);
-            int max = Math.max(red, Math.max(green, blue));
-            int min = Math.min(red, Math.min(green, blue));
-            int saturation = max - min;
+            int balancedRed = clamp(Math.round(Color.red(color) * balance.redScale));
+            int balancedGreen = clamp(Math.round(Color.green(color) * balance.greenScale));
+            int balancedBlue = clamp(Math.round(Color.blue(color) * balance.blueScale));
+            int luma = luminance(balancedRed, balancedGreen, balancedBlue);
+            int saturation = saturation(balancedRed, balancedGreen, balancedBlue);
+            int mapped = level(luma, low, scale);
+            int neutral = mapDocumentTone(mapped);
 
-            red = clamp(Math.round(red * 1.06f + 12));
-            green = clamp(Math.round(green * 1.06f + 12));
-            blue = clamp(Math.round(blue * 1.06f + 12));
-
-            if (luma > 148 && saturation < 96) {
-                red = blend(red, 255, 0.38f);
-                green = blend(green, 255, 0.38f);
-                blue = blend(blue, 255, 0.38f);
-            } else if (luma < 96) {
-                red = clamp(Math.round(red * 0.74f));
-                green = clamp(Math.round(green * 0.74f));
-                blue = clamp(Math.round(blue * 0.74f));
+            int red = neutral;
+            int green = neutral;
+            int blue = neutral;
+            if (saturation > 78 && luma > 62) {
+                red = blend(neutral, level(balancedRed, low, scale), 0.58f);
+                green = blend(neutral, level(balancedGreen, low, scale), 0.58f);
+                blue = blend(neutral, level(balancedBlue, low, scale), 0.58f);
             }
 
             pixels[i] = Color.argb(alpha, red, green, blue);
@@ -829,6 +832,55 @@ public class MainActivity extends Activity {
         Bitmap enhanced = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         enhanced.setPixels(pixels, 0, width, 0, 0, width, height);
         return enhanced;
+    }
+
+    private ChannelBalance measureChannelBalance(int[] pixels, int width, int height) {
+        int[] redHistogram = new int[256];
+        int[] greenHistogram = new int[256];
+        int[] blueHistogram = new int[256];
+        int sampleStep = Math.max(1, Math.min(width, height) / 680);
+        int sampleCount = 0;
+
+        for (int y = 0; y < height; y += sampleStep) {
+            for (int x = 0; x < width; x += sampleStep) {
+                int color = pixels[y * width + x];
+                redHistogram[Color.red(color)]++;
+                greenHistogram[Color.green(color)]++;
+                blueHistogram[Color.blue(color)]++;
+                sampleCount++;
+            }
+        }
+
+        int redWhite = Math.max(1, percentile(redHistogram, sampleCount, 0.96f));
+        int greenWhite = Math.max(1, percentile(greenHistogram, sampleCount, 0.96f));
+        int blueWhite = Math.max(1, percentile(blueHistogram, sampleCount, 0.96f));
+        float target = Math.min(242f, Math.max(redWhite, Math.max(greenWhite, blueWhite)));
+        return new ChannelBalance(
+                clampScale(target / redWhite),
+                clampScale(target / greenWhite),
+                clampScale(target / blueWhite)
+        );
+    }
+
+    private int mapDocumentTone(int value) {
+        float normalized = value / 255f;
+        if (normalized > 0.62f) {
+            return blend(value, 255, 0.78f);
+        }
+        if (normalized > 0.36f) {
+            return clamp(value + 26);
+        }
+        return clamp(Math.round(value * 0.72f));
+    }
+
+    private float clampScale(float value) {
+        return Math.max(0.72f, Math.min(1.48f, value));
+    }
+
+    private int saturation(int red, int green, int blue) {
+        int max = Math.max(red, Math.max(green, blue));
+        int min = Math.min(red, Math.min(green, blue));
+        return max - min;
     }
 
     private int percentile(int[] histogram, int total, float percentile) {
@@ -857,6 +909,38 @@ public class MainActivity extends Activity {
 
     private int clamp(int value) {
         return Math.max(0, Math.min(255, value));
+    }
+
+    private static final class EdgeStats {
+        private final int averageLuma;
+        private final int averageSaturation;
+
+        private EdgeStats(int averageLuma, int averageSaturation) {
+            this.averageLuma = averageLuma;
+            this.averageSaturation = averageSaturation;
+        }
+    }
+
+    private static final class ChannelBalance {
+        private final float redScale;
+        private final float greenScale;
+        private final float blueScale;
+
+        private ChannelBalance(float redScale, float greenScale, float blueScale) {
+            this.redScale = redScale;
+            this.greenScale = greenScale;
+            this.blueScale = blueScale;
+        }
+    }
+
+    private static final class ProcessedPage {
+        private final File imageFile;
+        private final boolean processed;
+
+        private ProcessedPage(File imageFile, boolean processed) {
+            this.imageFile = imageFile;
+            this.processed = processed;
+        }
     }
 
     private void beginPdfCreation() {

@@ -4,11 +4,11 @@
 
 ## 功能
 
-- 调用系统相机拍摄页面
+- 使用应用内相机拍摄页面
 - 支持连续添加多页
-- 支持连拍，拍完一页自动继续打开相机
-- 支持自动裁切照片边缘
-- 支持本地 AI 增亮和文字对比增强
+- 支持连拍，拍摄过程中不返回列表，点击右上角完成后统一处理
+- 支持自动裁切照片边缘，纸张识别失败时会用文字区域兜底裁切
+- 支持本地 AI 增亮、色偏校正、阴影压制和文字对比增强
 - 支持页面上移、下移和删除
 - 使用 Android 原生 `PdfDocument` 生成 PDF
 - 通过系统文件创建器选择 PDF 保存位置
@@ -42,5 +42,6 @@ gradle assembleDebug
 ## 主要文件
 
 - `app/src/main/java/com/doumiao/documentscanner/MainActivity.java`
+- `app/src/main/java/com/doumiao/documentscanner/CameraActivity.java`
 - `app/src/main/AndroidManifest.xml`
 - `app/src/main/res/xml/file_paths.xml`
