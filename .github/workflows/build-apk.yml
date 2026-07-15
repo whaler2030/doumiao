@@ -36,10 +36,16 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle assembleDebug --stacktrace 2>&1 | tee gradle-build.log
+          gradle assembleDebug 2>&1 | tee gradle-build.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            message=$(tail -200 gradle-build.log)
+            message=$(
+              {
+                grep -n -E 'Android resource linking failed|AAPT:|error:|FAILURE:|What went wrong|Execution failed|BUILD FAILED' gradle-build.log || true
+                echo
+                tail -120 gradle-build.log
+              } | head -180
+            )
             message=${message//'%'/'%25'}
             message=${message//$'\n'/'%0A'}
             message=${message//$'\r'/'%0D'}
